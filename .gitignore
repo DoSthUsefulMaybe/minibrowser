@@ -1,0 +1,6 @@
+node_modules/
+dist/
+_t/
+selfcheck*.png
+selfcheck*.log
+*.log

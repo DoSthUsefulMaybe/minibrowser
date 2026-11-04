@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    />
+    <title>笔记本</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --side: #f7f7f8;
+        --panel: #ffffff;
+        --fg: #22252a;
+        --fg-dim: #7c828b;
+        --line: #e4e6ea;
+        --accent: #2f6fed;
+        --accent-soft: rgba(47, 111, 237, 0.12);
+        --code: #f2f3f5;
+        --danger: #d94a3d;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1e2024;
+          --side: #191b1f;
+          --panel: #1e2024;
+          --fg: #dcdfe4;
+          --fg-dim: #8a919b;
+          --line: #2e333a;
+          --accent: #6f9bff;
+          --accent-soft: rgba(111, 155, 255, 0.16);
+          --code: #24282e;
+          --danger: #f07167;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.7 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      /* ---------------------------------------------------------- 顶栏 */
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 14px;
+        height: 44px;
+        flex: none;
+        border-bottom: 1px solid var(--line);
+      }
+      #title {
+        font-weight: 600;
+        font-size: 14px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #status {
+        font-size: 12px;
+        color: var(--fg-dim);
+        flex: none;
+      }
+      header .spacer {
+        flex: 1;
+      }
+      button {
+        font: inherit;
+        font-size: 12px;
+        padding: 5px 11px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--fg);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      button.primary:hover {
+        filter: brightness(1.08);
+        color: #fff;
+      }
+      .seg {
+        display: flex;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        overflow: hidden;
+      }
+      .seg button {
+        border: 0;
+        border-radius: 0;
+        padding: 5px 10px;
+        background: transparent;
+      }
+      .seg button.on {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      /* ---------------------------------------------------------- 主体 */
+      main {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      aside {
+        width: 250px;
+        flex: none;
+        background: var(--side);
+        border-right: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      #searchWrap {
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      #q {
+        width: 100%;
+        font: inherit;
+        font-size: 13px;
+        color: var(--fg);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 6px 10px;
+        outline: 0;
+      }
+      #q:focus {
+        border-color: var(--accent);
+      }
+      #tree {
+        flex: 1;
+        overflow-y: auto;
+        padding: 6px 6px 20px;
+      }
+      .node {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+        user-select: none;
+      }
+      .node:hover {
+        background: color-mix(in srgb, var(--fg-dim) 14%, transparent);
+      }
+      .node.active {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .node .ico {
+        flex: none;
+        width: 12px;
+        text-align: center;
+        color: var(--fg-dim);
+        font-size: 10px;
+      }
+      .node .label {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .children {
+        margin-left: 12px;
+      }
+      .result {
+        padding: 7px 9px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .result:hover {
+        background: color-mix(in srgb, var(--fg-dim) 14%, transparent);
+      }
+      .result b {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 2px;
+      }
+      .result span {
+        color: var(--fg-dim);
+      }
+
+      /* ---------------------------------------------------------- 编辑 / 预览 */
+      #editorWrap,
+      #previewWrap {
+        flex: 1 1 0;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      #editorWrap {
+        border-right: 1px solid var(--line);
+      }
+      #editor {
+        flex: 1;
+        width: 100%;
+        border: 0;
+        outline: 0;
+        resize: none;
+        padding: 22px 26px;
+        background: var(--panel);
+        color: var(--fg);
+        font: 14px/1.75 "Cascadia Mono", "Consolas", ui-monospace, monospace;
+        tab-size: 2;
+      }
+      #preview {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px 26px 40px;
+        user-select: text;
+      }
+      body.mode-edit #previewWrap,
+      body.mode-read #editorWrap {
+        display: none;
+      }
+
+      /* 反链 */
+      #backs {
+        flex: none;
+        max-height: 30%;
+        overflow-y: auto;
+        border-top: 1px solid var(--line);
+        padding: 10px 16px 14px;
+        font-size: 12px;
+      }
+      #backs h4 {
+        margin: 0 0 6px;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--fg-dim);
+        font-weight: 600;
+      }
+      #backs .bl {
+        display: block;
+        padding: 3px 6px;
+        border-radius: 5px;
+        color: var(--accent);
+        cursor: pointer;
+      }
+      #backs .bl:hover {
+        background: var(--accent-soft);
+      }
+      #backs .none {
+        color: var(--fg-dim);
+      }
+
+      /* ---------------------------------------------------------- Markdown 样式 */
+      #preview h1,
+      #preview h2,
+      #preview h3,
+      #preview h4,
+      #preview h5,
+      #preview h6 {
+        margin: 1.2em 0 0.5em;
+        line-height: 1.35;
+        font-weight: 650;
+      }
+      #preview h1 {
+        font-size: 1.7em;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 0.25em;
+      }
+      #preview h2 {
+        font-size: 1.4em;
+      }
+      #preview h3 {
+        font-size: 1.18em;
+      }
+      #preview p {
+        margin: 0.7em 0;
+      }
+      #preview a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      #preview a:hover {
+        text-decoration: underline;
+      }
+      #preview a.wikilink {
+        background: var(--accent-soft);
+        border-radius: 4px;
+        padding: 0 4px;
+      }
+      #preview a.wikilink.missing {
+        color: var(--fg-dim);
+        text-decoration: underline dashed;
+        background: transparent;
+      }
+      #preview code {
+        background: var(--code);
+        border-radius: 4px;
+        padding: 0.12em 0.36em;
+        font-family: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+        font-size: 0.9em;
+      }
+      #preview pre {
+        background: var(--code);
+        border-radius: 8px;
+        padding: 12px 14px;
+        overflow-x: auto;
+      }
+      #preview pre code {
+        background: none;
+        padding: 0;
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+      #preview blockquote {
+        margin: 0.8em 0;
+        padding: 0.2em 0 0.2em 14px;
+        border-left: 3px solid var(--accent);
+        color: var(--fg-dim);
+      }
+      #preview ul,
+      #preview ol {
+        padding-left: 1.4em;
+        margin: 0.6em 0;
+      }
+      #preview li {
+        margin: 0.2em 0;
+      }
+      #preview li.task {
+        list-style: none;
+        margin-left: -1.2em;
+      }
+      #preview hr {
+        border: 0;
+        border-top: 1px solid var(--line);
+        margin: 1.6em 0;
+      }
+      #preview table {
+        border-collapse: collapse;
+        margin: 0.8em 0;
+        font-size: 0.94em;
+      }
+      #preview th,
+      #preview td {
+        border: 1px solid var(--line);
+        padding: 5px 10px;
+      }
+      #preview th {
+        background: var(--code);
+        font-weight: 600;
+      }
+      #preview img {
+        max-width: 100%;
+        border-radius: 6px;
+      }
+      #preview .tag {
+        color: var(--accent);
+        background: var(--accent-soft);
+        border-radius: 4px;
+        padding: 0 4px;
+        font-size: 0.92em;
+      }
+      #preview input[type="checkbox"] {
+        accent-color: var(--accent);
+      }
+
+      /* 新建笔记的内联输入 */
+      #newRow {
+        display: flex;
+        gap: 6px;
+        padding: 6px 8px;
+      }
+      #newName {
+        flex: 1;
+        min-width: 0;
+        font: inherit;
+        font-size: 13px;
+        color: var(--fg);
+        background: var(--bg);
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        padding: 4px 8px;
+        outline: 0;
+      }
+      .empty-tip {
+        color: var(--fg-dim);
+        padding: 24px 14px;
+        font-size: 12px;
+        line-height: 1.9;
+      }
+
+      /* 右键菜单 */
+      .ctx {
+        position: fixed;
+        z-index: 80;
+        min-width: 140px;
+        padding: 5px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+        font-size: 13px;
+      }
+      .ctx div {
+        padding: 6px 11px;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+      .ctx div:hover {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      /* 输入面板（Electron 没有 window.prompt） */
+      .ask-mask {
+        position: fixed;
+        inset: 0;
+        z-index: 90;
+        background: rgba(0, 0, 0, 0.3);
+        display: grid;
+        place-items: center;
+      }
+      .ask-box {
+        width: 330px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        padding: 16px;
+        box-shadow: 0 20px 52px rgba(0, 0, 0, 0.3);
+      }
+      .ask-title {
+        font-size: 13px;
+        color: var(--fg-dim);
+        margin-bottom: 9px;
+      }
+      .ask-input {
+        width: 100%;
+        font: inherit;
+        color: var(--fg);
+        background: var(--bg);
+        border: 1px solid var(--accent);
+        border-radius: 7px;
+        padding: 7px 10px;
+        outline: 0;
+      }
+      .ask-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 13px;
+      }
+    </style>
+  </head>
+  <body class="mode-split">
+    <header>
+      <span id="title">未打开笔记</span>
+      <span id="status"></span>
+      <span class="spacer"></span>
+      <div class="seg">
+        <button data-mode="edit">编辑</button>
+        <button data-mode="split" class="on">分栏</button>
+        <button data-mode="read">阅读</button>
+      </div>
+      <button id="folderBtn" title="切换笔记文件夹（你的 Obsidian 库也能直接用）">文件夹</button>
+      <button id="newBtn" class="primary">新建笔记</button>
+    </header>
+
+    <main>
+      <aside>
+        <div id="searchWrap"><input id="q" type="search" placeholder="搜索标题和正文…" spellcheck="false" /></div>
+        <div id="tree"></div>
+      </aside>
+
+      <section id="editorWrap">
+        <textarea id="editor" spellcheck="false" placeholder="在这里写…（Ctrl+S 保存，[[双链]]，#标签）"></textarea>
+      </section>
+
+      <section id="previewWrap">
+        <div id="preview"></div>
+        <div id="backs"></div>
+      </section>
+    </main>
+
+    <script src="vault-md.js"></script>
+    <script src="vault-ui.js"></script>
+  </body>
+</html>

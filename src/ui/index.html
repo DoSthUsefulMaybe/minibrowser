@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https: http:; style-src 'self' 'unsafe-inline'" />
+    <title>minibrowser</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header id="chrome">
+      <div id="tabstrip">
+        <div id="tabs"></div>
+        <button id="newtab" class="glyph" title="新标签页 (Ctrl+T)" aria-label="新标签页">
+          <svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" /></svg>
+        </button>
+      </div>
+      <div id="toolbar">
+        <button class="glyph" data-act="back" title="后退 (Alt+←)" aria-label="后退">
+          <svg viewBox="0 0 16 16"><path d="M10 3L5 8l5 5" /></svg>
+        </button>
+        <button class="glyph" data-act="forward" title="前进 (Alt+→)" aria-label="前进">
+          <svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5" /></svg>
+        </button>
+        <button class="glyph" data-act="reload" id="reload" title="刷新 (Ctrl+R)" aria-label="刷新">
+          <svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5V5h-2.6" /></svg>
+        </button>
+        <div id="addresswrap">
+          <span id="scheme" aria-hidden="true"></span>
+          <input
+            id="address"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="输入网址或搜索内容"
+            aria-label="地址栏"
+          />
+        </div>
+        <button id="accountbtn" title="账号（点击切换 / 新建）" aria-label="账号">
+          <span class="acc-dot"></span>
+          <span class="acc-name"></span>
+        </button>
+        <button class="glyph" id="gridbtn" title="宫格布局 (Ctrl+Shift+G)" aria-label="宫格布局"></button>
+        <button class="glyph" id="toolsbtn" title="更多：脚本仓库 / 开发者工具" aria-label="更多">
+          <svg viewBox="0 0 16 16">
+            <circle cx="3.4" cy="8" r="1.25" />
+            <circle cx="8" cy="8" r="1.25" />
+            <circle cx="12.6" cy="8" r="1.25" />
+          </svg>
+        </button>
+      </div>
+    </header>
+    <div id="cells"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

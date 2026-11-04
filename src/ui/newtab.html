@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>新标签页</title>
+    <style>
+      :root {
+        --fg: #1f2328;
+        --fg-dim: #8a9099;
+        --bg: #ffffff;
+        --field: #f1f3f5;
+        --field-focus: #ffffff;
+        --accent: #2f6fed;
+        --line: #e3e6ea;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e6e8eb;
+          --fg-dim: #8b929c;
+          --bg: #1c1f23;
+          --field: #262a2f;
+          --field-focus: #2c3137;
+          --accent: #5b8dff;
+          --line: #33383f;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        display: grid;
+        place-items: center;
+      }
+      .wrap {
+        width: min(560px, 76vw);
+        transform: translateY(-6vh);
+        text-align: center;
+      }
+      .logo {
+        font-size: 26px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        margin-bottom: 22px;
+        color: var(--fg);
+        opacity: 0.9;
+      }
+      .logo span {
+        color: var(--accent);
+      }
+      input {
+        width: 100%;
+        height: 46px;
+        padding: 0 18px;
+        border: 1px solid var(--line);
+        border-radius: 23px;
+        background: var(--field);
+        color: var(--fg);
+        font: inherit;
+        outline: 0;
+        transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+      }
+      input::placeholder {
+        color: var(--fg-dim);
+      }
+      input:focus {
+        background: var(--field-focus);
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+      }
+      .hint {
+        margin-top: 20px;
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      kbd {
+        font: inherit;
+        font-size: 11px;
+        padding: 1px 5px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: var(--field);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="logo">mini<span>browser</span></div>
+      <input id="q" type="text" spellcheck="false" autocomplete="off" placeholder="搜索或输入网址" autofocus />
+      <div class="hint">
+        <kbd>Ctrl</kbd>+<kbd>T</kbd> 新标签 &nbsp;·&nbsp;
+        <kbd>Ctrl</kbd>+<kbd>W</kbd> 关闭 &nbsp;·&nbsp;
+        <kbd>Ctrl</kbd>+<kbd>Tab</kbd> 切换 &nbsp;·&nbsp;
+        <kbd>Ctrl</kbd>+<kbd>L</kbd> 地址栏
+      </div>
+    </div>
+    <script>
+      const q = document.getElementById('q');
+      q.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        const s = q.value.trim();
+        if (!s) return;
+        let url;
+        if (/^[a-z][a-z0-9+.-]*:/i.test(s)) url = s;
+        else if (!/\s/.test(s) && /^[^\s/?#]+\.[^\s/?#]{2,}/.test(s)) url = 'https://' + s;
+        else url = 'https://www.bing.com/search?q=' + encodeURIComponent(s);
+        location.href = url;
+      });
+    </script>
+  </body>
+</html>

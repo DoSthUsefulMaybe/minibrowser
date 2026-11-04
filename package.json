@@ -1,0 +1,22 @@
+{
+  "name": "minibrowser",
+  "version": "0.1.0",
+  "description": "极简多标签浏览器：单窗口、多标签、各自独立渲染",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "electron . --selfcheck",
+    "cli": "electron . --cli",
+    "build": "node build.js"
+  },
+  "devDependencies": {
+    "electron": "^45.2.2"
+  },
+  "author": "DoSthUsefulMaybe",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DoSthUsefulMaybe/minibrowser.git"
+  },
+  "homepage": "https://github.com/DoSthUsefulMaybe/minibrowser"
+}

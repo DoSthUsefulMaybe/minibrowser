@@ -1,0 +1,434 @@
+/* minibrowser —— 工具栏 UI。高度必须与 main.js 的 CHROME_HEIGHT(76px) 一致 */
+:root {
+  --chrome-h: 76px;
+  --tabstrip-h: 40px;
+  --toolbar-h: 36px;
+
+  --bg-chrome: #eceef1;
+  --bg-gap: #c6ccd5;
+  --bg-tab-active: #ffffff;
+  --bg-tab-hover: #e2e5ea;
+  --bg-field: #ffffff;
+  --bg-field-focus: #ffffff;
+  --fg: #1f2328;
+  --fg-dim: #6b7280;
+  --line: #d8dce2;
+  --accent: #2f6fed;
+  --shadow-tab: 0 1px 2px rgba(16, 24, 40, 0.16);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-chrome: #202327;
+    --bg-gap: #0d0f11;
+    --bg-tab-active: #35393f;
+    --bg-tab-hover: #2b2f34;
+    --bg-field: #2a2e33;
+    --bg-field-focus: #30353b;
+    --fg: #e6e8eb;
+    --fg-dim: #9aa1ab;
+    --line: #3a3f46;
+    --accent: #5b8dff;
+    --shadow-tab: 0 1px 2px rgba(0, 0, 0, 0.5);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  /* 没被标签内容盖住的地方 = 宫格缝隙，露的就是这个底色 */
+  background: var(--bg-gap);
+  color: var(--fg);
+  font: 13px/1.3 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  user-select: none;
+  cursor: default;
+}
+
+#chrome {
+  height: var(--chrome-h);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-chrome);
+}
+
+/* ---------------------------------------------------------------- 格子标题条
+   多宫格时每格顶部 22px 不放 WebContentsView，露出的就是这里；
+   单格模式下没有格子，这一层是空的。 */
+
+#cells {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cell-head {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 6px 6px 0 0;
+  background: var(--bg-chrome);
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1;
+  overflow: hidden;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.cell-head:hover {
+  background: var(--bg-tab-hover);
+}
+
+.cell-head.active {
+  background: var(--bg-tab-active);
+  color: var(--fg);
+  box-shadow: var(--shadow-tab);
+}
+
+.cell-head.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+}
+
+.cell-fav {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  object-fit: contain;
+}
+
+.cell-acc {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.cell-fav.placeholder {
+  background: color-mix(in srgb, var(--fg-dim) 45%, transparent);
+}
+
+.cell-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cell-index {
+  flex: none;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- 标签条 */
+
+#tabstrip {
+  height: var(--tabstrip-h);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* 右边 140px 留给系统窗口按钮（titleBarOverlay） */
+  padding: 0 140px 0 6px;
+  -webkit-app-region: drag; /* 拖空白处可移动窗口 */
+  border-bottom: 1px solid var(--line);
+}
+
+#tabs {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 5px 0;
+}
+
+#tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  -webkit-app-region: no-drag;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  width: 210px;
+  flex: 0 1 auto;
+  min-width: 84px;
+  max-width: 210px;
+  padding: 0 4px 0 9px;
+  border-radius: 8px;
+  color: var(--fg);
+  transition: background-color 0.12s ease;
+}
+
+.tab:hover {
+  background: var(--bg-tab-hover);
+}
+
+.tab.active {
+  background: var(--bg-tab-active);
+  box-shadow: var(--shadow-tab);
+}
+
+.tab-slot {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+}
+
+.tab-icon {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.tab-icon.placeholder {
+  background: color-mix(in srgb, var(--fg-dim) 45%, transparent);
+}
+
+.tab-spinner {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1.6px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tab-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--fg-dim);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: color-mix(in srgb, var(--fg-dim) 22%, transparent);
+  color: var(--fg);
+}
+
+.tab-close svg {
+  width: 9px;
+  height: 9px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  fill: none;
+}
+
+/* ---------------------------------------------------------------- 按钮 */
+
+.glyph {
+  -webkit-app-region: no-drag;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.glyph:hover {
+  background: color-mix(in srgb, var(--fg-dim) 18%, transparent);
+}
+
+.glyph:active {
+  background: color-mix(in srgb, var(--fg-dim) 28%, transparent);
+}
+
+.glyph:disabled {
+  color: var(--fg-dim);
+  opacity: 0.38;
+  cursor: default;
+  background: transparent;
+}
+
+.glyph svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+
+/* 宫格按钮的图标是小方块，用填充画 */
+#gridbtn svg,
+#toolsbtn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* ---------------------------------------------------------------- 账号 */
+
+#accountbtn {
+  -webkit-app-region: no-drag;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 27px;
+  margin-left: 6px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg);
+  font: 12px/1 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+  max-width: 132px;
+}
+
+#accountbtn:hover {
+  background: color-mix(in srgb, var(--fg-dim) 16%, transparent);
+}
+
+#accountbtn:active {
+  background: color-mix(in srgb, var(--fg-dim) 26%, transparent);
+}
+
+.acc-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.acc-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#newtab {
+  margin-left: 2px;
+}
+
+#newtab svg {
+  stroke-width: 1.8;
+}
+
+/* ---------------------------------------------------------------- 工具栏 */
+
+#toolbar {
+  height: var(--toolbar-h);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px 6px;
+  -webkit-app-region: drag; /* 工具栏空白处也能拖动窗口 */
+}
+
+#addresswrap {
+  -webkit-app-region: no-drag;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 27px;
+  margin-left: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--bg-field);
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+#addresswrap:focus-within {
+  background: var(--bg-field-focus);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+#scheme {
+  flex: none;
+  font-size: 12px;
+  color: var(--fg-dim);
+  display: none;
+}
+
+#scheme.on {
+  display: inline;
+}
+
+#address {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font: 13px/1 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  user-select: text;
+  cursor: text;
+}
+
+#address::placeholder {
+  color: var(--fg-dim);
+}
