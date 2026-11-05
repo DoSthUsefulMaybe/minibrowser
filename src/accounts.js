@@ -73,9 +73,37 @@ function create(name) {
 function rename(id, name) {
   const acc = list().find((a) => a.id === id);
   if (!acc || !name) return null;
-  acc.name = name;
+  acc.name = String(name).slice(0, 30);
   save();
   return acc;
+}
+
+/** 改名 / 改色 */
+function update(id, patch = {}) {
+  const acc = list().find((a) => a.id === id);
+  if (!acc) return null;
+  if (patch.name !== undefined) acc.name = String(patch.name).slice(0, 30) || acc.name;
+  if (patch.color !== undefined && /^#[0-9a-f]{3,8}$/i.test(String(patch.color))) acc.color = String(patch.color);
+  save();
+  return acc;
+}
+
+/** 删除账号（默认账号不能删）；它的会话分区也一起清掉 */
+function remove(id) {
+  const s = load();
+  if (id === DEFAULT_ACCOUNT.id) return { ok: false, reason: '默认账号不能删除' };
+  const i = s.accounts.findIndex((a) => a.id === id);
+  if (i < 0) return { ok: false, reason: '账号不存在' };
+  const [acc] = s.accounts.splice(i, 1);
+  save();
+  if (acc.partition) {
+    try {
+      session.fromPartition(acc.partition).clearStorageData();
+    } catch {
+      /* 分区已不存在 */
+    }
+  }
+  return { ok: true, account: acc };
 }
 
 /** 账号 → Electron Session（第一次取会创建持久化分区） */
@@ -88,4 +116,4 @@ function publicList() {
   return list().map((a) => ({ id: a.id, name: a.name, color: a.color }));
 }
 
-module.exports = { list, publicList, get, exists, create, rename, save, sessionOf, DEFAULT_ACCOUNT };
+module.exports = { list, publicList, get, exists, create, rename, update, remove, save, sessionOf, DEFAULT_ACCOUNT, COLORS };

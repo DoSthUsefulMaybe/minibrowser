@@ -12,6 +12,7 @@ const { app, BrowserWindow, WebContentsView, ipcMain, nativeTheme, Menu, dialog,
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const accounts = require('./accounts');
+
 const scripts = require('./scripts');
 const vault = require('./vault');
 
@@ -41,14 +42,37 @@ if (SELFCHECK) {
   }
 }
 
-/** @type {BrowserWindow|null} */
-let win = null;
-let uiReady = false;
-/** @type {Array<{id:number,view:WebContentsView,loading:boolean,favicon:string|null}>} */
-const tabs = [];
-let activeId = null;
-let seq = 0;
-let activeAccountId = accounts.DEFAULT_ACCOUNT.id; // 新标签默认用哪个账号
+/**
+ * 每个窗口一份独立上下文：标签、当前标签、宫格、可见起点、账号全部独立。
+ * @type {Array<any>}
+ */
+const windows = [];
+let winCounter = 0;
+let lastAccountId = accounts.DEFAULT_ACCOUNT.id; // 新窗口默认沿用上次用过的账号
+
+/** 取当前上下文：显式传参优先，否则按聚焦窗口判断 */
+function curCtx() {
+  if (!windows.length) return null;
+  if (windows.length === 1) return windows[0];
+  const focused = BrowserWindow.getFocusedWindow();
+  if (focused) {
+    const hit = windows.find((c) => c.win === focused);
+    if (hit) return hit;
+  }
+  return windows[0];
+}
+
+// 系统深浅色变化：所有窗口一起更新标题栏覆盖色
+nativeTheme.on('updated', () => {
+  for (const c of windows) {
+    if (!c.win || c.win.isDestroyed()) continue;
+    try {
+      c.win.setTitleBarOverlay({ ...overlayColors(), height: 40 });
+    } catch {
+      /* 非 Windows 或已关闭 */
+    }
+  }
+});
 
 // ---------------------------------------------------------------- 地址解析
 
@@ -83,12 +107,12 @@ function toDisplayUrl(url) {
   return url;
 }
 
-function tabById(id) {
-  return tabs.find((t) => t.id === id) || null;
+function tabById(id, ctx = curCtx()) {
+  return ctx.tabs.find((t) => t.id === id) || null;
 }
 
-function activeTab() {
-  return tabById(activeId);
+function activeTab(ctx = curCtx()) {
+  return tabById(ctx.activeId);
 }
 
 // ---------------------------------------------------------------- 窗口与布局
@@ -99,15 +123,18 @@ function overlayColors() {
     : { color: '#eceef1', symbolColor: '#1f2328' };
 }
 
-function createWindow() {
-  win = new BrowserWindow({
+/** 新开一个窗口。窗口之间账号、标签、宫格全独立（Ctrl+N）。 */
+function createWindow({ accountId = null, gridIndex = 0, show = null } = {}) {
+  const acc = accounts.get(accountId || lastAccountId);
+
+  const win = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 720,
     minHeight: 480,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1f23' : '#f5f6f8',
     title: 'minibrowser',
-    show: !SELFCHECK || process.argv.includes('--show'),
+    show: show === null ? !SELFCHECK || process.argv.includes('--show') : show,
     // 标签条就是标题栏：隐藏原生标题栏，只保留右上角系统按钮
     titleBarStyle: 'hidden',
     titleBarOverlay: { ...overlayColors(), height: 40 },
@@ -120,48 +147,64 @@ function createWindow() {
     },
   });
 
-  nativeTheme.on('updated', () => {
-    if (!win || win.isDestroyed()) return;
-    try {
-      win.setTitleBarOverlay({ ...overlayColors(), height: 40 });
-    } catch {
-      /* 非 Windows 或已关闭 */
-    }
-  });
+  const ctx = {
+    id: ++winCounter,
+    win,
+    uiReady: false,
+    tabs: [],
+    activeId: null,
+    seq: 0,
+    gridIndex: Math.max(0, Math.min(GRIDS.length - 1, gridIndex)),
+    visibleStart: 0,
+    accountId: acc.id,
+  };
+  windows.push(ctx);
+  lastAccountId = acc.id;
 
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(UI_DIR, 'index.html'));
 
   win.webContents.once('did-finish-load', () => {
-    uiReady = true;
-    pushState();
+    ctx.uiReady = true;
+    pushState(ctx);
   });
 
-  wireShortcuts(win.webContents, () => activeTab());
+  wireShortcuts(win.webContents, () => activeTab(ctx), ctx);
 
-  win.on('resize', scheduleLayout);
-  win.on('maximize', scheduleLayout);
-  win.on('unmaximize', scheduleLayout);
-  win.on('enter-full-screen', scheduleLayout);
-  win.on('leave-full-screen', scheduleLayout);
+  for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
+    win.on(ev, () => scheduleLayout(ctx));
+  }
 
   win.on('closed', () => {
-    win = null;
-    tabs.length = 0;
+    const i = windows.indexOf(ctx);
+    if (i >= 0) windows.splice(i, 1);
+    for (const t of ctx.tabs) {
+      try {
+        t.view.webContents.close();
+      } catch {
+        /* 已销毁 */
+      }
+    }
+    ctx.tabs.length = 0;
   });
 
   // 地址栏等 UI 里的链接/跳转不要劫持整个窗口
   win.webContents.setWindowOpenHandler(({ url }) => {
-    createTab(url);
+    createTab(url, {}, ctx);
     return { action: 'deny' };
   });
 
-  createTab(START_URL);
+  win.webContents.on('focus', () => {
+    lastAccountId = ctx.accountId;
+  });
+
+  createTab(START_URL, {}, ctx);
+  return ctx;
 }
 
-function contentBounds() {
-  if (!win) return { x: 0, y: CHROME_HEIGHT, width: 0, height: 0 };
-  const [w, h] = win.getContentSize();
+function contentBounds(ctx = curCtx()) {
+  if (!ctx.win) return { x: 0, y: CHROME_HEIGHT, width: 0, height: 0 };
+  const [w, h] = ctx.win.getContentSize();
   return {
     x: 0,
     y: CHROME_HEIGHT,
@@ -186,39 +229,36 @@ const GRIDS = [
   { cols: 3, rows: 3 },
 ];
 
-let gridIndex = 0;
-let visibleStart = 0;
-
-const grid = () => GRIDS[gridIndex];
-const capacity = () => grid().cols * grid().rows;
-const isMulti = () => capacity() > 1;
+const grid = (ctx = curCtx()) => GRIDS[ctx.gridIndex];
+const capacity = (ctx = curCtx()) => grid(ctx).cols * grid(ctx).rows;
+const isMulti = (ctx = curCtx()) => capacity(ctx) > 1;
 
 /** 当前落在格子里的标签（按标签顺序切一段窗口） */
-function visibleTabs() {
-  return tabs.slice(visibleStart, visibleStart + capacity());
+function visibleTabs(ctx = curCtx()) {
+  return ctx.tabs.slice(ctx.visibleStart, ctx.visibleStart + capacity(ctx));
 }
 
-function clampVisibleStart() {
-  const max = Math.max(0, tabs.length - capacity());
-  visibleStart = Math.max(0, Math.min(visibleStart, max));
+function clampVisibleStart(ctx = curCtx()) {
+  const max = Math.max(0, ctx.tabs.length - capacity(ctx));
+  ctx.visibleStart = Math.max(0, Math.min(ctx.visibleStart, max));
 }
 
 /** 让第 index 个标签一定在格子里 */
-function ensureVisible(index) {
+function ensureVisible(index, ctx = curCtx()) {
   if (index < 0) return;
-  const cap = capacity();
-  if (index < visibleStart) visibleStart = index;
-  else if (index >= visibleStart + cap) visibleStart = index - cap + 1;
-  clampVisibleStart();
+  const cap = capacity(ctx);
+  if (index < ctx.visibleStart) ctx.visibleStart = index;
+  else if (index >= ctx.visibleStart + cap) ctx.visibleStart = index - cap + 1;
+  clampVisibleStart(ctx);
 }
 
 /** 每个格子的矩形（不含 view 的 header 偏移），顺序 = visibleTabs 顺序 */
-function cellRects() {
-  const b = contentBounds();
-  const g = grid();
-  const gap = isMulti() ? GAP : 0;
-  const header = isMulti() ? CELL_HEADER : 0;
-  const vis = visibleTabs();
+function cellRects(ctx) {
+  const b = contentBounds(ctx);
+  const g = grid(ctx);
+  const gap = isMulti(ctx) ? GAP : 0;
+  const header = isMulti(ctx) ? CELL_HEADER : 0;
+  const vis = visibleTabs(ctx);
   const out = [];
 
   for (let i = 0; i < vis.length; i++) {
@@ -248,12 +288,12 @@ function cellRects() {
   return out;
 }
 
-function layout() {
-  if (!win) return;
-  const rects = cellRects();
+function layout(ctx = curCtx()) {
+  if (!ctx.win) return;
+  const rects = cellRects(ctx);
   const shown = new Set(rects.map((r) => r.tab.id));
 
-  for (const t of tabs) {
+  for (const t of ctx.tabs) {
     if (!shown.has(t.id)) t.view.setVisible(false);
   }
   for (const r of rects) {
@@ -268,38 +308,38 @@ function layout() {
 }
 
 let layoutTimer = null;
-function scheduleLayout() {
+function scheduleLayout(ctx) {
   if (layoutTimer) return;
   layoutTimer = setTimeout(() => {
     layoutTimer = null;
-    layout();
-    pushState();
+    layout(ctx);
+    pushState(ctx);
   }, 16);
 }
 
-function setGrid(index) {
+function setGrid(index, ctx = curCtx()) {
   const next = Math.max(0, Math.min(GRIDS.length - 1, index));
-  if (next === gridIndex) return;
-  gridIndex = next;
+  if (next === ctx.gridIndex) return;
+  ctx.gridIndex = next;
 
-  const idx = tabs.findIndex((t) => t.id === activeId);
-  if (idx >= 0) ensureVisible(idx);
-  else clampVisibleStart();
+  const idx = ctx.tabs.findIndex((t) => t.id === ctx.activeId);
+  if (idx >= 0) ensureVisible(idx, ctx);
+  else clampVisibleStart(ctx);
 
-  layout();
-  pushState();
+  layout(ctx);
+  pushState(ctx);
 }
 
-function cycleGrid() {
-  setGrid((gridIndex + 1) % GRIDS.length);
+function cycleGrid(ctx = curCtx()) {
+  setGrid((ctx.gridIndex + 1) % GRIDS.length);
 }
 
 // ---------------------------------------------------------------- 标签生命周期
 
-function createTab(url = NEWTAB_URL, { activate = true, accountId = null } = {}) {
-  if (!win) return null;
+function createTab(url = NEWTAB_URL, { activate = true, accountId = null } = {}, ctx = curCtx()) {
+  if (!ctx || !ctx.win) return null;
 
-  const acc = accounts.get(accountId || activeAccountId);
+  const acc = accounts.get(accountId || ctx.accountId);
   const view = new WebContentsView({
     webPreferences: {
       // 账号池的关键：每个账号一个独立 session，cookie/storage 完全隔离
@@ -313,11 +353,12 @@ function createTab(url = NEWTAB_URL, { activate = true, accountId = null } = {})
   });
   view.setBackgroundColor('#ffffff');
 
-  const tab = { id: ++seq, view, loading: false, favicon: null, accountId: acc.id };
-  activeAccountId = acc.id;
-  tabs.push(tab);
+  const tab = { id: ++ctx.seq, view, loading: false, favicon: null, accountId: acc.id, ctx };
+  ctx.accountId = acc.id;
+  lastAccountId = acc.id;
+  ctx.tabs.push(tab);
 
-  win.contentView.addChildView(view);
+  ctx.win.contentView.addChildView(view);
   view.setVisible(false);
 
   wireTab(tab);
@@ -326,71 +367,71 @@ function createTab(url = NEWTAB_URL, { activate = true, accountId = null } = {})
   view.webContents.loadURL(target).catch(() => {});
 
   if (activate) {
-    setActive(tab.id); // setActive 里会 ensureVisible + layout + pushState
+    setActive(tab.id, ctx); // setActive 里会 ensureVisible + layout + pushState
   } else {
-    layout();
-    pushState();
+    layout(ctx);
+    pushState(ctx);
   }
   return tab;
 }
 
-function closeTab(id) {
-  const idx = tabs.findIndex((t) => t.id === id);
+function closeTab(id, ctx = curCtx()) {
+  const idx = ctx.tabs.findIndex((t) => t.id === id);
   if (idx === -1) return;
 
-  const [tab] = tabs.splice(idx, 1);
-  if (win) win.contentView.removeChildView(tab.view);
+  const [tab] = ctx.tabs.splice(idx, 1);
+  if (ctx.win) ctx.win.contentView.removeChildView(tab.view);
   try {
     tab.view.webContents.close();
   } catch {
     /* 已销毁 */
   }
 
-  if (activeId === id) {
-    const next = tabs[idx] || tabs[idx - 1] || null;
-    activeId = null;
+  if (ctx.activeId === id) {
+    const next = ctx.tabs[idx] || ctx.tabs[idx - 1] || null;
+    ctx.activeId = null;
     if (next) {
-      setActive(next.id);
+      setActive(next.id, ctx);
       return;
     }
   }
 
-  if (tabs.length === 0) {
-    if (win) win.close();
+  if (ctx.tabs.length === 0) {
+    if (ctx.win) ctx.win.close();
     return;
   }
 
-  clampVisibleStart();
-  layout();
-  pushState();
+  clampVisibleStart(ctx);
+  layout(ctx);
+  pushState(ctx);
 }
 
-function setActive(id) {
-  const tab = tabById(id);
+function setActive(id, ctx = curCtx()) {
+  const tab = tabById(id, ctx);
   if (!tab) return;
-  activeId = id;
-  ensureVisible(tabs.indexOf(tab));
-  layout();
-  pushState();
-  if (win && !win.isDestroyed()) tab.view.webContents.focus();
+  ctx.activeId = id;
+  ensureVisible(ctx.tabs.indexOf(tab));
+  layout(ctx);
+  pushState(ctx);
+  if (ctx.win && !ctx.win.isDestroyed()) tab.view.webContents.focus();
 }
 
 /** 给某个标签换账号。
  *  session 在 WebContentsView 创建时就绑死了，不能运行时替换，
  *  所以换账号 = 销毁旧 view、用新 session 建一个、把原地址重新加载回来。 */
-function switchAccount(tabId, accountId) {
-  if (!win) return false;
-  const idx = tabs.findIndex((t) => t.id === tabId);
+function switchAccount(tabId, accountId, ctx = curCtx()) {
+  if (!ctx.win) return false;
+  const idx = ctx.tabs.findIndex((t) => t.id === tabId);
   if (idx === -1) return false;
 
-  const tab = tabs[idx];
+  const tab = ctx.tabs[idx];
   const acc = accounts.get(accountId);
   if (!acc || tab.accountId === acc.id) return false;
 
   const url = tab.view.webContents.getURL() || toRealUrl(NEWTAB_URL);
-  const wasActive = activeId === tab.id;
+  const wasActive = ctx.activeId === tab.id;
 
-  win.contentView.removeChildView(tab.view);
+  ctx.win.contentView.removeChildView(tab.view);
   try {
     tab.view.webContents.close();
   } catch {
@@ -408,7 +449,7 @@ function switchAccount(tabId, accountId) {
     },
   });
   view.setBackgroundColor('#ffffff');
-  win.contentView.addChildView(view);
+  ctx.win.contentView.addChildView(view);
   view.setVisible(false);
 
   tab.view = view;
@@ -416,27 +457,27 @@ function switchAccount(tabId, accountId) {
   tab.favicon = null;
   tab.loading = true;
   tab.title = `切换账号：${acc.name}`;
-  activeAccountId = acc.id;
+  ctx.accountId = acc.id;
 
   wireTab(tab);
   view.webContents.loadURL(url).catch(() => {});
 
-  if (wasActive) activeId = tab.id;
-  layout();
-  pushState();
+  if (wasActive) ctx.activeId = tab.id;
+  layout(ctx);
+  pushState(ctx);
   return true;
 }
 
 /** 账号菜单用原生菜单：DOM 浮层会被 WebContentsView 盖住，原生菜单不会 */
-function showAccountMenu() {
-  const tab = activeTab();
+function showAccountMenu(ctx = curCtx()) {
+  const tab = activeTab(ctx);
   if (!tab) return;
 
   const items = accounts.list().map((acc) => ({
     label: acc.name,
     type: 'radio',
     checked: acc.id === tab.accountId,
-    click: () => switchAccount(tab.id, acc.id),
+    click: () => switchAccount(tab.id, acc.id, ctx),
   }));
 
   items.push({ type: 'separator' });
@@ -444,14 +485,15 @@ function showAccountMenu() {
     label: '新建账号并在当前标签使用',
     click: () => {
       const acc = accounts.create();
-      switchAccount(tab.id, acc.id);
+      switchAccount(tab.id, acc.id, ctx);
     },
   });
+  items.push({ label: '管理账号池…', click: openAccountsWindow });
   items.push({
     label: '清除当前账号的站点数据…',
     click: async () => {
       const acc = accounts.get(tab.accountId);
-      const { response } = await dialog.showMessageBox(win, {
+      const { response } = await dialog.showMessageBox(ctx.win, {
         type: 'warning',
         buttons: ['取消', '清除'],
         defaultId: 0,
@@ -463,18 +505,20 @@ function showAccountMenu() {
       if (response === 1) {
         await accounts.sessionOf(acc).clearStorageData();
         tab.view.webContents.reload();
-        pushState();
+        pushState(ctx);
       }
     },
   });
 
-  Menu.buildFromTemplate(items).popup({ window: win });
+  Menu.buildFromTemplate(items).popup({ window: ctx.win });
 }
 
 /** 工具栏「⋯」菜单：脚本仓库、开发者工具等 */
-function showToolsMenu() {
-  const tab = activeTab();
+function showToolsMenu(ctx = curCtx()) {
+  const tab = activeTab(ctx);
   Menu.buildFromTemplate([
+    { label: '新窗口', accelerator: 'Ctrl+N', click: () => createWindow({ accountId: ctx.accountId }) },
+    { type: 'separator' },
     { label: '脚本仓库…', click: openScriptsWindow },
     { label: '笔记本…', click: openVaultWindow },
     { type: 'separator' },
@@ -485,21 +529,22 @@ function showToolsMenu() {
         if (tab) tab.view.webContents.toggleDevTools();
       },
     },
-  ]).popup({ window: win });
+  ]).popup({ window: ctx.win });
 }
 
-function cycleTab(delta) {  if (tabs.length < 2) return;
-  const i = tabs.findIndex((t) => t.id === activeId);
-  const next = tabs[(i + delta + tabs.length) % tabs.length];
-  setActive(next.id);
+function cycleTab(delta, ctx = curCtx()) {  if (ctx.tabs.length < 2) return;
+  const i = ctx.tabs.findIndex((t) => t.id === ctx.activeId);
+  const next = ctx.tabs[(i + delta + ctx.tabs.length) % ctx.tabs.length];
+  setActive(next.id, ctx);
 }
 
 // ---------------------------------------------------------------- 每个标签的事件
 
-function wireTab(tab) {
+function wireTab(tab, ctx = curCtx()) {
+  ctx = tab.ctx || ctx;
   const wc = tab.view.webContents;
 
-  const changed = () => pushState();
+  const changed = () => pushState(ctx);
 
   wc.on('did-start-loading', () => {
     tab.loading = true;
@@ -512,7 +557,7 @@ function wireTab(tab) {
   });
   wc.on('page-title-updated', (_e, title) => {
     tab.title = title;
-    if (win && tab.id === activeId) win.setTitle(title ? `${title} — minibrowser` : 'minibrowser');
+    if (ctx.win && tab.id === ctx.activeId) ctx.win.setTitle(title ? `${title} — minibrowser` : 'minibrowser');
     changed();
   });
   wc.on('page-favicon-updated', (_e, favicons) => {
@@ -528,7 +573,7 @@ function wireTab(tab) {
     if (!isMainFrame || code === -3 /* ABORTED */) return;
     tab.loading = false;
     tab.title = `打不开：${desc || code}`;
-    if (win && tab.id === activeId) win.setTitle('minibrowser');
+    if (ctx.win && tab.id === ctx.activeId) ctx.win.setTitle('minibrowser');
     changed();
   });
   wc.on('render-process-gone', () => {
@@ -539,23 +584,23 @@ function wireTab(tab) {
 
   // 点哪个格子，地址栏就跟哪个（多宫格下这一步很关键）
   wc.on('focus', () => {
-    if (activeId !== tab.id) setActive(tab.id);
+    if (ctx.activeId !== tab.id) setActive(tab.id, ctx);
   });
 
   // target=_blank / window.open → 新标签，而不是新窗口
   wc.setWindowOpenHandler(({ url, disposition }) => {
     if (disposition === 'saveToDisk') return { action: 'allow' };
-    createTab(url);
+    createTab(url, {}, ctx);
     return { action: 'deny' };
   });
 
   wireContextMenu(tab);
-  wireShortcuts(wc, () => tab);
+  wireShortcuts(wc, () => tab, ctx);
 }
 
 // ---------------------------------------------------------------- 快捷键
 
-function wireShortcuts(wc, getTab) {
+function wireShortcuts(wc, getTab, ctx = curCtx()) {
   wc.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
     const ctrl = input.control || input.meta;
@@ -563,31 +608,36 @@ function wireShortcuts(wc, getTab) {
     const tab = getTab();
     const eat = () => event.preventDefault();
 
+    if (ctrl && !input.alt && key === 'n') {
+      eat();
+      createWindow({ accountId: ctx.accountId });
+      return;
+    }
     if (ctrl && !input.alt && key === 't') {
       eat();
-      createTab(NEWTAB_URL);
-      focusAddress();
+      createTab(NEWTAB_URL, {}, ctx);
+      focusAddress(ctx);
       return;
     }
     if (ctrl && !input.alt && key === 'w') {
       eat();
-      if (tab) closeTab(tab.id);
+      if (tab) closeTab(tab.id, ctx);
       return;
     }
     if (ctrl && key === 'tab') {
       eat();
-      cycleTab(input.shift ? -1 : 1);
+      cycleTab(input.shift ? -1 : 1, ctx);
       return;
     }
     if (ctrl && !input.alt && /^[1-9]$/.test(key)) {
       eat();
-      const n = key === '9' ? tabs.length - 1 : Number(key) - 1;
-      if (tabs[n]) setActive(tabs[n].id);
+      const n = key === '9' ? ctx.tabs.length - 1 : Number(key) - 1;
+      if (ctx.tabs[n]) setActive(ctx.tabs[n].id);
       return;
     }
     if (ctrl && !input.alt && key === 'l') {
       eat();
-      focusAddress();
+      focusAddress(ctx);
       return;
     }
     if ((ctrl && key === 'r') || key === 'f5') {
@@ -614,7 +664,7 @@ function wireShortcuts(wc, getTab) {
     }
     if (ctrl && input.shift && key === 'g') {
       eat();
-      cycleGrid();
+      cycleGrid(ctx);
       return;
     }
     if (ctrl && input.shift && key === 'i') {
@@ -624,10 +674,10 @@ function wireShortcuts(wc, getTab) {
   });
 }
 
-function focusAddress() {
-  if (!win) return;
-  win.webContents.focus();
-  win.webContents.send('ui:focus-address');
+function focusAddress(ctx = curCtx()) {
+  if (!ctx.win) return;
+  ctx.win.webContents.focus();
+  ctx.win.webContents.send('ui:focus-address');
 }
 
 // ---------------------------------------------------------------- 用户脚本
@@ -661,22 +711,53 @@ async function runUserScriptsSync(wc) {
 }
 
 let scriptsWin = null;
+let accountsWin = null;
+
+/** 账号池：可视化编辑（改名 / 换色 / 新建 / 删除） */
+function openAccountsWindow() {
+  if (accountsWin && !accountsWin.isDestroyed()) {
+    accountsWin.focus();
+    return;
+  }
+  accountsWin = new BrowserWindow({
+    width: 560,
+    height: 560,
+    minWidth: 460,
+    minHeight: 380,
+    parent: (curCtx() && curCtx().win) || undefined,
+    title: '账号池',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1f23' : '#f5f6f8',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-accounts.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  accountsWin.setMenuBarVisibility(false);
+  accountsWin.loadFile(path.join(UI_DIR, 'accounts.html'));
+  accountsWin.on('closed', () => {
+    accountsWin = null;
+  });
+}
 let vaultWin = null;
 let titleTimer = null;
 
 /** 临时把标题改成提示语，1.6 秒后恢复（DOM 浮层会被 WebContentsView 盖住，标题最省事） */
-function flashTitle(msg) {
-  if (!win || win.isDestroyed()) return;
-  win.setTitle(`${msg} — minibrowser`);
+function flashTitle(msg, ctx = curCtx()) {
+  if (!ctx.win || ctx.win.isDestroyed()) return;
+  ctx.win.setTitle(`${msg} — minibrowser`);
   clearTimeout(titleTimer);
   titleTimer = setTimeout(() => {
-    const t = activeTab();
-    win.setTitle(t && t.title ? `${t.title} — minibrowser` : 'minibrowser');
+    const t = activeTab(ctx);
+    ctx.win.setTitle(t && t.title ? `${t.title} — minibrowser` : 'minibrowser');
   }, 1600);
 }
 
 /** 页面右键菜单：选中文字可存进笔记本 */
-function wireContextMenu(tab) {
+function wireContextMenu(tab, ctx = curCtx()) {
+  ctx = tab.ctx || ctx;
   const wc = tab.view.webContents;
   wc.on('context-menu', (_e, params) => {
     const sel = (params.selectionText || '').trim();
@@ -687,7 +768,7 @@ function wireContextMenu(tab) {
         label: sel.length > 22 ? `用选中内容新建笔记（${sel.length} 字）` : `用选中内容新建笔记：「${sel.slice(0, 18)}」`,
         click: () => {
           vault.addNote({ url: wc.getURL(), title: wc.getTitle(), text: sel });
-          flashTitle(`已新建笔记（${sel.length} 字）`);
+          flashTitle(`已新建笔记（${sel.length} 字）`, ctx);
           if (vaultWin && !vaultWin.isDestroyed()) vaultWin.webContents.send('vault:changed');
         },
       });
@@ -699,7 +780,7 @@ function wireContextMenu(tab) {
       label: '用此页面新建笔记',
       click: () => {
         vault.addNote({ url: wc.getURL(), title: wc.getTitle(), text: '' });
-        flashTitle('已新建笔记');
+        flashTitle('已新建笔记', ctx);
         if (vaultWin && !vaultWin.isDestroyed()) vaultWin.webContents.send('vault:changed');
       },
     });
@@ -712,7 +793,7 @@ function wireContextMenu(tab) {
     items.push({ type: 'separator' });
     items.push({ label: '检查元素', click: () => wc.inspectElement(params.x, params.y) });
 
-    Menu.buildFromTemplate(items).popup({ window: win });
+    Menu.buildFromTemplate(items).popup({ window: ctx.win });
   });
 }
 
@@ -726,7 +807,7 @@ function openVaultWindow() {
     height: 780,
     minWidth: 640,
     minHeight: 420,
-    parent: win || undefined,
+    parent: (curCtx() && curCtx().win) || undefined,
     title: '笔记本',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1f23' : '#f5f6f8',
     autoHideMenuBar: true,
@@ -754,7 +835,7 @@ function openScriptsWindow() {
     height: 660,
     minWidth: 640,
     minHeight: 420,
-    parent: win || undefined,
+    parent: (curCtx() && curCtx().win) || undefined,
     title: '脚本仓库',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1f23' : '#f5f6f8',
     autoHideMenuBar: true,
@@ -774,18 +855,18 @@ function openScriptsWindow() {
 
 // ---------------------------------------------------------------- 状态同步
 
-function snapshot() {
-  const g = grid();
-  const rects = cellRects();
+function snapshot(ctx = curCtx()) {
+  const g = grid(ctx);
+  const rects = cellRects(ctx);
   return {
-    activeId,
+    activeId: ctx.activeId,
     grid: {
-      index: gridIndex,
+      index: ctx.gridIndex,
       cols: g.cols,
       rows: g.rows,
-      capacity: capacity(),
+      capacity: capacity(ctx),
       total: GRIDS.length,
-      multi: isMulti(),
+      multi: isMulti(ctx),
     },
     // 格子几何用 CSS 像素、以窗口内容区左上角为原点，UI 层直接绝对定位
     cells: rects.map((r) => ({
@@ -795,9 +876,9 @@ function snapshot() {
       width: r.width,
       height: r.height,
       header: r.header,
-      active: r.tab.id === activeId,
+      active: r.tab.id === ctx.activeId,
     })),
-    tabs: tabs.map((t) => {
+    tabs: ctx.tabs.map((t) => {
       const wc = t.view.webContents;
       const nav = wc.navigationHistory;
       const acc = accounts.get(t.accountId);
@@ -819,25 +900,66 @@ function snapshot() {
   };
 }
 
-function pushState() {
-  if (!win || win.isDestroyed() || !uiReady) return;
-  win.webContents.send('ui:state', snapshot());
+function pushState(ctx = curCtx()) {
+  if (!ctx.win || ctx.win.isDestroyed() || !ctx.uiReady) return;
+  ctx.win.webContents.send('ui:state', snapshot(ctx));
 }
 
 // ---------------------------------------------------------------- IPC
 
-ipcMain.handle('ui:snapshot', () => snapshot());
+/** 从 IPC 事件反查是哪个窗口发来的 */
+function ctxOf(e) {
+  const wc = e && e.sender;
+  if (wc) {
+    const hit = windows.find((c) => !c.win.isDestroyed() && c.win.webContents === wc);
+    if (hit) return hit;
+  }
+  return curCtx();
+}
 
-ipcMain.on('tabs:create', (_e, url) => {
-  createTab(url || NEWTAB_URL);
-  focusAddress();
+ipcMain.handle('ui:snapshot', (e) => snapshot(ctxOf(e)));
+
+ipcMain.on('tabs:create', (e, url) => {
+  const ctx = ctxOf(e);
+  createTab(url || NEWTAB_URL, {}, ctx);
+  focusAddress(ctx);
 });
-ipcMain.on('tabs:close', (_e, id) => closeTab(id));
-ipcMain.on('tabs:activate', (_e, id) => setActive(id));
-ipcMain.on('view:cycle-grid', () => cycleGrid());
-ipcMain.on('view:set-grid', (_e, index) => setGrid(Number(index)));
-ipcMain.on('account:menu', () => showAccountMenu());
-ipcMain.on('tools:menu', () => showToolsMenu());
+ipcMain.on('tabs:close', (e, id) => closeTab(id, ctxOf(e)));
+ipcMain.on('tabs:activate', (e, id) => setActive(id, ctxOf(e)));
+ipcMain.on('view:cycle-grid', (e) => cycleGrid(ctxOf(e)));
+ipcMain.on('view:set-grid', (e, index) => setGrid(Number(index), ctxOf(e)));
+ipcMain.on('account:menu', (e) => showAccountMenu(ctxOf(e)));
+ipcMain.on('tools:menu', (e) => showToolsMenu(ctxOf(e)));
+
+ipcMain.on('nav:go', (e, input) => {
+  const ctx = ctxOf(e);
+  const tab = activeTab(ctx);
+  if (!tab) return;
+  const url = normalizeInput(input);
+  if (!url) return;
+  tab.favicon = null;
+  tab.view.webContents.loadURL(toRealUrl(url)).catch(() => {});
+  tab.view.webContents.focus();
+});
+
+ipcMain.on('nav:action', (e, action) => {
+  const ctx = ctxOf(e);
+  const tab = activeTab(ctx);
+  if (!tab) return;
+  const wc = tab.view.webContents;
+  const nav = wc.navigationHistory;
+  if (action === 'back' && nav.canGoBack()) nav.goBack();
+  else if (action === 'forward' && nav.canGoForward()) nav.goForward();
+  else if (action === 'reload') wc.reload();
+  else if (action === 'stop') wc.stop();
+  else if (action === 'home') wc.loadURL(toRealUrl(NEWTAB_URL)).catch(() => {});
+});
+
+// 新窗口（Ctrl+N /「⋯ → 新窗口」）；新窗口沿用当前窗口的账号
+ipcMain.on('window:new', (e) => {
+  const ctx = ctxOf(e);
+  createWindow({ accountId: ctx ? ctx.accountId : null });
+});
 
 // ---- 脚本仓库
 ipcMain.handle('scripts:list', () => scripts.list());
@@ -845,11 +967,13 @@ ipcMain.handle('scripts:save', (_e, item) => scripts.upsert(item));
 ipcMain.handle('scripts:remove', (_e, id) => scripts.remove(id));
 ipcMain.handle('scripts:toggle', (_e, id, on) => scripts.toggle(id, on));
 ipcMain.handle('scripts:reload-pages', () => {
-  for (const t of tabs) {
-    try {
-      t.view.webContents.reload();
-    } catch {
-      /* 已销毁 */
+  for (const c of windows) {
+    for (const t of c.tabs) {
+      try {
+        t.view.webContents.reload();
+      } catch {
+        /* 已销毁 */
+      }
     }
   }
   return true;
@@ -860,10 +984,43 @@ ipcMain.handle('win:close-self', (e) => {
   return true;
 });
 
+// ---- 账号池
+ipcMain.handle('accounts:list', () => {
+  const counts = {};
+  for (const c of windows) {
+    for (const t of c.tabs) counts[t.accountId] = (counts[t.accountId] || 0) + 1;
+  }
+  return accounts.list().map((a) => ({ id: a.id, name: a.name, color: a.color, tabs: counts[a.id] || 0 }));
+});
+ipcMain.handle('accounts:create', (_e, name) => {
+  const a = accounts.create(name);
+  for (const c of windows) pushState(c);
+  return { id: a.id, name: a.name, color: a.color };
+});
+ipcMain.handle('accounts:update', (_e, id, patch) => {
+  const a = accounts.update(id, patch || {});
+  for (const c of windows) pushState(c);
+  return a ? { id: a.id, name: a.name, color: a.color } : null;
+});
+ipcMain.handle('accounts:remove', (_e, id) => {
+  const r = accounts.remove(id);
+  if (r.ok) {
+    // 用了这个账号的标签退回默认账号，重新加载
+    for (const c of windows) {
+      for (const t of [...c.tabs]) {
+        if (t.accountId === id) switchAccount(t.id, accounts.DEFAULT_ACCOUNT.id, c);
+      }
+    }
+    for (const c of windows) pushState(c);
+  }
+  return r;
+});
+
 // ---- 笔记本（vault：就是磁盘上的一个文件夹）
 ipcMain.handle('vault:root', () => vault.root());
 ipcMain.handle('vault:choose-root', async () => {
-  const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '选择笔记文件夹' });
+  const owner = curCtx() && curCtx().win;
+  const r = await dialog.showOpenDialog(owner, { properties: ['openDirectory'], title: '选择笔记文件夹' });
   if (!r.canceled && r.filePaths[0]) vault.setRoot(r.filePaths[0]);
   return vault.root();
 });
@@ -881,28 +1038,6 @@ ipcMain.handle('vault:reveal', (_e, rel) => {
   return true;
 });
 
-ipcMain.on('nav:go', (_e, input) => {
-  const tab = activeTab();
-  if (!tab) return;
-  const url = normalizeInput(input);
-  if (!url) return;
-  tab.favicon = null;
-  tab.view.webContents.loadURL(toRealUrl(url)).catch(() => {});
-  tab.view.webContents.focus();
-});
-
-ipcMain.on('nav:action', (_e, action) => {
-  const tab = activeTab();
-  if (!tab) return;
-  const wc = tab.view.webContents;
-  const nav = wc.navigationHistory;
-  if (action === 'back' && nav.canGoBack()) nav.goBack();
-  else if (action === 'forward' && nav.canGoForward()) nav.goForward();
-  else if (action === 'reload') wc.reload();
-  else if (action === 'stop') wc.stop();
-  else if (action === 'home') wc.loadURL(toRealUrl(NEWTAB_URL)).catch(() => {});
-});
-
 // ---------------------------------------------------------------- 自检
 
 async function selfCheck() {
@@ -914,6 +1049,10 @@ async function selfCheck() {
     if (!pass) out.ok = false;
   };
   const note = (name, detail) => out.steps.push({ name, pass: true, info: true, detail });
+  // 自检只跑一个窗口，把旧名字映射到它，函数体不用大改
+  const ctx = windows[0];
+  const win = ctx.win;
+  const tabs = ctx.tabs;
 
   try {
     const boot = activeTab();
@@ -955,8 +1094,8 @@ async function selfCheck() {
     const titles = tabs.map((t) => t.title);
     step('标题各自独立', titles[0] !== titles[1], JSON.stringify(titles));
 
-    const visibleCount = tabs.filter((t) => t.id === activeId).length;
-    step('同一时刻只有一个标签可见', visibleCount === 1, `activeId=${activeId}`);
+    const visibleCount = tabs.filter((t) => t.id === ctx.activeId).length;
+    step('同一时刻只有一个标签可见', visibleCount === 1, `activeId=${ctx.activeId}`);
 
     // ---- UI ↔ 主进程联动（在 UI 渲染进程里真点、真敲）
     const domTabs = await win.webContents
@@ -965,12 +1104,12 @@ async function selfCheck() {
     step('标签条渲染出 2 个标签', domTabs.length === 2, JSON.stringify(domTabs));
 
     if (domTabs.length === 2) {
-      const target = domTabs[0] === activeId ? domTabs[1] : domTabs[0];
+      const target = domTabs[0] === ctx.activeId ? domTabs[1] : domTabs[0];
       await win.webContents
         .executeJavaScript(`document.querySelector('.tab[data-id="${target}"]').click()`)
         .catch(() => {});
       await wait(300);
-      step('点击标签能切换', activeId === target, `点了 ${target}，activeId=${activeId}`);
+      step('点击标签能切换', ctx.activeId === target, `点了 ${target}，ctx.activeId=${ctx.activeId}`);
     }
 
     const addrFilled = await win.webContents
@@ -1094,7 +1233,7 @@ async function selfCheck() {
     const target = rects[2].tab;
     setActive(target.id);
     await wait(200);
-    step('切换格子后 active 跟随', activeId === target.id, `activeId=${activeId}, 目标=${target.id}`);
+    step('切换格子后 active 跟随', ctx.activeId === target.id, `activeId=${ctx.activeId}, 目标=${target.id}`);
     const addrForCell = await win.webContents
       .executeJavaScript("document.getElementById('address').value")
       .catch(() => '');
@@ -1103,7 +1242,7 @@ async function selfCheck() {
     // 直接点网页（焦点落到某个 view）也应该切换 active
     rects[0].tab.view.webContents.focus();
     await wait(250);
-    step('点网页本身也会切换 active', activeId === rects[0].tab.id, `activeId=${activeId}, 期望=${rects[0].tab.id}`);
+    step('点网页本身也会切换 active', ctx.activeId === rects[0].tab.id, `activeId=${ctx.activeId}, 期望=${rects[0].tab.id}`);
 
     // UI 层截图（格子内容由各自的 view 渲染，capturePage 抓不到，另存）
     try {
@@ -1336,6 +1475,81 @@ async function selfCheck() {
       vault.remove(note.path);
       vault.remove(target.path);
       step('删：笔记可从磁盘删除', !flat(vault.tree()).some((n) => n.path === note.path), `剩余 ${flat(vault.tree()).length} 条`);
+    }
+
+    // ---- 多窗口：窗口之间账号/标签独立
+    {
+      const before = windows.length;
+      const second = createWindow({ accountId: 'default', show: false });
+      await wait(900);
+      step('能开出第二个窗口', windows.length === before + 1, `windows=${windows.length}`);
+      step('新窗口有自己的标签', second.tabs.length === 1 && second.tabs[0].ctx === second, `tabs=${second.tabs.length}`);
+      step('两个窗口的标签不共享', !!tabs[0] && second.tabs[0].id !== tabs[0].id, `${tabs[0] && tabs[0].id} vs ${second.tabs[0].id}`);
+
+      const accB = accounts.list().find((a) => a.name === '自检B') || accounts.create('自检B');
+      switchAccount(second.tabs[0].id, accB.id, second);
+      await wait(700);
+      step(
+        '窗口账号互不影响',
+        second.accountId === accB.id && ctx.accountId !== accB.id,
+        `窗口2=${second.accountId.slice(0, 6)} 窗口1=${ctx.accountId.slice(0, 6)}`
+      );
+
+      second.win.close();
+      await wait(600);
+      step('关窗口后上下文被清理', windows.length === before, `windows=${windows.length}`);
+    }
+
+    // ---- 账号池可视化编辑
+    {
+      openAccountsWindow();
+      await wait(1400);
+      const accAlive = !!(accountsWin && !accountsWin.isDestroyed());
+      step('账号池窗口能打开', accAlive, accAlive ? 'ok' : 'no window');
+
+      if (accAlive) {
+        const rows = await accountsWin.webContents
+          .executeJavaScript("document.querySelectorAll('.row').length")
+          .catch(() => -1);
+        step('账号池列出账号', rows >= 2, `rows=${rows}`);
+
+        // 改名 + 改色（走 IPC，等于点了输入框和色板）
+        const target = accounts.list().find((a) => a.name === '自检A');
+        const renamed = await accountsWin.webContents
+          .executeJavaScript(
+            `window.accountStore.update(${JSON.stringify(target.id)}, { name: '自检A改', color: '#db2777' })`
+          )
+          .catch(() => null);
+        step('账号可改名改色', !!renamed && renamed.name === '自检A改' && renamed.color === '#db2777', renamed ? `${renamed.name} ${renamed.color}` : 'failed');
+
+        const after = await accountsWin.webContents
+          .executeJavaScript("document.querySelectorAll('.row .name')[0].value")
+          .catch(() => '');
+        step('改名后列表即时刷新', String(after).length > 0, String(after));
+
+        // 自检不留垃圾：改回原名，下次还能按名字找到
+        await accounts.update(target.id, { name: '自检A', color: '#2f6fed' });
+
+        const del = await accountsWin.webContents
+          .executeJavaScript("window.accountStore.remove('default')")
+          .catch(() => null);
+        step('默认账号不可删除', !!del && del.ok === false, del ? del.reason : 'failed');
+
+        const delNew = await accountsWin.webContents
+          .executeJavaScript(`(async()=>{const a=await window.accountStore.create('临时');return await window.accountStore.remove(a.id);})()`)
+          .catch(() => null);
+        step('普通账号可删除', !!delNew && delNew.ok === true, delNew ? 'ok' : 'failed');
+
+        try {
+          const shot = await accountsWin.webContents.capturePage();
+          fs.writeFileSync(path.join(SHOT_DIR, 'selfcheck-accounts.png'), shot.toPNG());
+          note('账号池界面截图', 'selfcheck-accounts.png');
+        } catch {
+          /* 忽略 */
+        }
+        accountsWin.close();
+        await wait(300);
+      }
     }
 
     // 9 格极限（--grid9）

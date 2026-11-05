@@ -4,3 +4,4 @@ _t/
 selfcheck*.png
 selfcheck*.log
 *.log
+selfcheck*.json
