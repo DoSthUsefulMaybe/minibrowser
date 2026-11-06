@@ -7,11 +7,20 @@ const hintEl = $('hint');
 const COLORS = ['#2f6fed', '#e0574b', '#2fa36b', '#c47f17', '#8b5cf6', '#0ea5e9', '#db2777', '#65a30d', '#8a9099'];
 
 let items = [];
+let refreshTimer = null;
 
 async function refresh() {
   items = await window.accountStore.list();
   render();
-  hintEl.textContent = `${items.length} 个账号`;
+  const st = await window.accountStore.storage().catch(() => null);
+  hintEl.textContent = st
+    ? `${items.length} 个账号 · ${st.ok ? '已本地保存' : `保存失败：${st.error || '未知错误'}`}`
+    : `${items.length} 个账号`;
+}
+
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(refresh, 60);
 }
 
 function render() {
@@ -122,3 +131,4 @@ $('new').addEventListener('click', async () => {
 });
 
 refresh();
+window.accountStore.onChanged(scheduleRefresh);

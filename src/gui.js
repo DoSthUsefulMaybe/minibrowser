@@ -15,6 +15,7 @@ const accounts = require('./accounts');
 
 const scripts = require('./scripts');
 const vault = require('./vault');
+const automation = require('./automation');
 
 const UI_DIR = path.join(__dirname, 'ui');
 const NEWTAB_FILE = path.join(UI_DIR, 'newtab.html');
@@ -26,6 +27,25 @@ const CHROME_HEIGHT = 76; // 标签条 40 + 工具栏 36，与 ui/style.css 保�
 const SEARCH_PREFIX = 'https://www.bing.com/search?q=';
 const SELFCHECK = process.argv.includes('--selfcheck');
 const START_URL = NEWTAB_URL;
+
+// 本地自动化入口：--automation-port=9333 --automation-token=xxx
+const AUTOMATION_PORT =
+  Number((process.argv.find((a) => a.startsWith('--automation-port=')) || '').split('=')[1]) || 0;
+const AUTOMATION_TOKEN =
+  process.env.MINIBROWSER_AUTOMATION_TOKEN ||
+  (process.argv.find((a) => a.startsWith('--automation-token=')) || '').split('=')[1] ||
+  '';
+
+// 有些站点会按 UA 里的 Electron/minibrowser 标识做风控，可显式传标准 UA
+const CUSTOM_UA =
+  (process.argv.find((a) => a.startsWith('--user-agent=')) || '').split('=')[1] || '';
+if (CUSTOM_UA) {
+  try {
+    app.userAgentFallback = CUSTOM_UA;
+  } catch {
+    /* 某些 Electron 版本只允许 ready 前设置 */
+  }
+}
 
 // 无 GPU 的环境（远程桌面 / 虚拟机 / 自动化沙箱）里 GPU 进程会反复崩溃，
 // 直接退到软件光栅；有 GPU 时保持默认的硬件加速。
@@ -39,6 +59,17 @@ if (SELFCHECK) {
     app.setPath('userData', path.join(require('node:os').tmpdir(), 'minibrowser-selfcheck'));
   } catch {
     /* 拿不到临时目录就用默认 */
+  }
+}
+
+// 自动化实例可以用独立 profile，避免和用户正在开的窗口抢缓存
+const AUTOMATION_PROFILE =
+  (process.argv.find((a) => a.startsWith('--automation-profile=')) || '').split('=')[1] || '';
+if (AUTOMATION_PROFILE) {
+  try {
+    app.setPath('userData', AUTOMATION_PROFILE);
+  } catch {
+    /* 路径不可用就用默认 */
   }
 }
 
@@ -352,6 +383,7 @@ function createTab(url = NEWTAB_URL, { activate = true, accountId = null } = {},
     },
   });
   view.setBackgroundColor('#ffffff');
+  if (CUSTOM_UA) view.webContents.setUserAgent(CUSTOM_UA);
 
   const tab = { id: ++ctx.seq, view, loading: false, favicon: null, accountId: acc.id, ctx };
   ctx.accountId = acc.id;
@@ -449,6 +481,7 @@ function switchAccount(tabId, accountId, ctx = curCtx()) {
     },
   });
   view.setBackgroundColor('#ffffff');
+  if (CUSTOM_UA) view.webContents.setUserAgent(CUSTOM_UA);
   ctx.win.contentView.addChildView(view);
   view.setVisible(false);
 
@@ -994,27 +1027,14 @@ ipcMain.handle('accounts:list', () => {
 });
 ipcMain.handle('accounts:create', (_e, name) => {
   const a = accounts.create(name);
-  for (const c of windows) pushState(c);
   return { id: a.id, name: a.name, color: a.color };
 });
 ipcMain.handle('accounts:update', (_e, id, patch) => {
   const a = accounts.update(id, patch || {});
-  for (const c of windows) pushState(c);
   return a ? { id: a.id, name: a.name, color: a.color } : null;
 });
-ipcMain.handle('accounts:remove', (_e, id) => {
-  const r = accounts.remove(id);
-  if (r.ok) {
-    // 用了这个账号的标签退回默认账号，重新加载
-    for (const c of windows) {
-      for (const t of [...c.tabs]) {
-        if (t.accountId === id) switchAccount(t.id, accounts.DEFAULT_ACCOUNT.id, c);
-      }
-    }
-    for (const c of windows) pushState(c);
-  }
-  return r;
-});
+ipcMain.handle('accounts:remove', (_e, id) => accounts.remove(id));
+ipcMain.handle('accounts:storage', () => accounts.storageInfo());
 
 // ---- 笔记本（vault：就是磁盘上的一个文件夹）
 ipcMain.handle('vault:root', () => vault.root());
@@ -1513,6 +1533,16 @@ async function selfCheck() {
           .catch(() => -1);
         step('账号池列出账号', rows >= 2, `rows=${rows}`);
 
+        // 其它窗口/进程改了账号池，已打开的账号池窗口要自动刷新
+        const probe = accounts.create('外部变更测试');
+        await wait(400);
+        const rowsAfter = await accountsWin.webContents
+          .executeJavaScript("document.querySelectorAll('.row').length")
+          .catch(() => -1);
+        step('账号变更自动刷新账号池窗口', rowsAfter === rows + 1, `${rows} -> ${rowsAfter}`);
+        accounts.remove(probe.id);
+        await wait(200);
+
         // 改名 + 改色（走 IPC，等于点了输入框和色板）
         const target = accounts.list().find((a) => a.name === '自检A');
         const renamed = await accountsWin.webContents
@@ -1521,6 +1551,16 @@ async function selfCheck() {
           )
           .catch(() => null);
         step('账号可改名改色', !!renamed && renamed.name === '自检A改' && renamed.color === '#db2777', renamed ? `${renamed.name} ${renamed.color}` : 'failed');
+
+        // 持久化：写入 accounts.json，reload 后仍在；每个窗口的当前账号仍各自独立
+        const persisted = accounts.list().find((a) => a.name === '自检A改');
+        const accountFile = path.join(app.getPath('userData'), 'accounts.json');
+        const onDisk = JSON.parse(fs.readFileSync(accountFile, 'utf8'));
+        step('账号池已落盘', !!persisted && onDisk.accounts.some((a) => a.id === persisted.id), accountFile);
+        const reloaded = accounts.reload();
+        step('账号池可重载', !!reloaded && !!persisted && accounts.exists(persisted.id), reloaded ? 'ok' : 'failed');
+        const storage = accounts.storageInfo();
+        step('账号池存储状态正常', storage.exists && storage.ok, storage.path);
 
         const after = await accountsWin.webContents
           .executeJavaScript("document.querySelectorAll('.row .name')[0].value")
@@ -1654,7 +1694,27 @@ app.whenReady().then(async () => {
   if (process.argv.includes('--light')) nativeTheme.themeSource = 'light';
   if (process.argv.includes('--dark')) nativeTheme.themeSource = 'dark';
 
+  // 账号池文件被别的窗口/进程改动时：所有窗口刷新，但各自保留自己的当前账号。
+  // 只有账号被删掉时，用到它的标签才各自退回默认账号。
+  accounts.onChange(() => {
+    for (const c of windows) {
+      for (const t of [...c.tabs]) {
+        if (!accounts.exists(t.accountId)) switchAccount(t.id, accounts.DEFAULT_ACCOUNT.id, c);
+      }
+      if (!accounts.exists(c.accountId)) c.accountId = accounts.DEFAULT_ACCOUNT.id;
+      pushState(c);
+    }
+    if (accountsWin && !accountsWin.isDestroyed()) accountsWin.webContents.send('accounts:changed');
+  });
+
   createWindow();
+  if (AUTOMATION_PORT) {
+    automation.start({
+      port: AUTOMATION_PORT,
+      token: AUTOMATION_TOKEN,
+      api: { windows, curCtx, activeTab, createTab, setActive },
+    });
+  }
   if (SELFCHECK) await selfCheck();
 });
 

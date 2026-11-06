@@ -73,6 +73,10 @@ locales/               只留中英文
 点色点换颜色、新建、删除，右边显示每个账号正被多少个标签使用。删账号会把它的 cookie 一起清掉，
 正在用它的标签自动退回默认账号并重新加载；内置的「默认」账号不可删。
 
+账号池保存在 `userData/accounts.json`，**关闭重开仍在**；写入使用临时文件 + rename，
+文件被其它窗口/进程改动时会自动重载并刷新界面。每个窗口仍然各自选择当前账号，
+一个窗口切账号不会影响其它窗口；只有账号被删除时，用到它的标签才各自退回默认账号。
+
 ## 多窗口
 
 `Ctrl+N` 新开一个窗口，或者「⋯ → 新窗口」。
@@ -128,6 +132,42 @@ minibrowser-cli.exe shot example.com --out shot.png
 - `--out` 把大内容落盘，只回传路径 + 200 字预览 + 字节数，避免撑爆上下文；
 - 退出码固定：`0` 全成功 / `1` 有页面失败 / `2` 参数错误；
 - `caps` 输出能力清单（命令、选项、退出码），新增命令后自动出现在里面。
+
+## 本地自动化入口（GUI）
+
+给 AI / 脚本用的本地 HTTP 接口。启动时加：
+
+```bat
+minibrowser.exe --automation-port=9333 --automation-token=你的随机token
+```
+
+> 也可以把 token 放在环境变量 `MINIBROWSER_AUTOMATION_TOKEN`，避免出现在进程命令行里。
+> 没有 token 时自动化入口拒绝启动。
+
+可选参数：
+
+- `--automation-profile=<目录>`：自动化实例使用独立 profile，避免和正在开的窗口抢缓存；
+- `--user-agent=<UA>`：自定义 UA（有些站点会按 UA 里的 Electron 标识做风控）。
+
+接口（全部要求 `Authorization: Bearer <token>`）：
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/health` | 存活检查 |
+| GET | `/status` | 窗口、标签、当前标签 |
+| GET | `/screenshot` | 当前标签截图 |
+| GET | `/events` | 最近捕获的网络/控制台事件 |
+| POST | `/navigate` | 打开 http/https 地址 |
+| POST | `/select` | 切换标签 |
+| POST | `/eval` | 在当前标签执行 JS |
+| POST | `/focus` / `/click` / `/insert` | 聚焦、点击、输入 |
+| POST | `/listen` / `/clear-events` | 开启/清空网络捕获 |
+| POST | `/netbody` | 读取某次请求的响应体（敏感字段打码） |
+| POST | `/useragent` / `/cdp` | 设置 UA / 白名单内的 CDP 命令 |
+
+**安全边界**：只监听 `127.0.0.1`，必须带 token，校验 Host 和 `Content-Type: application/json`；
+`/cdp` 只允许自动化需要的方法；`/navigate` 只允许 http/https；不要把端口暴露到局域网或公网。
+`/eval` 会在当前页面执行 JS，等同于把该标签页的控制权交给调用方，token 要当成本机密钥保管。
 
 ## 备忘
 

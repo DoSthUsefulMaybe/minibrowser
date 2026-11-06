@@ -181,9 +181,10 @@
       <h1>账号池</h1>
       <p>每个账号是一个独立会话：cookie、localStorage、缓存互不可见，可以同时登多个号。</p>
       <details>
-        <summary>窗口和账号的关系</summary>
+        <summary>窗口、账号和本地保存</summary>
         <p>
           每个窗口有自己的「当前账号」，窗口里新开的标签默认用它；不同窗口可以各用各的账号，互不影响。<br />
+          账号池保存在本机 <code>accounts.json</code>，关闭重开仍在；别的窗口改了账号，这里会自动刷新。<br />
           改账号名或颜色只影响显示，不动数据；删账号会连它的 cookie 一起清掉，<code>默认</code> 不能删。
         </p>
       </details>
