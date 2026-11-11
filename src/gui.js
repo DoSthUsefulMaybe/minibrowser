@@ -47,6 +47,11 @@ if (CUSTOM_UA) {
   }
 }
 
+const START_ACCOUNT_NAME =
+  (process.argv.find((a) => a.startsWith('--account-name=')) || '').split('=')[1] || '';
+const START_ACCOUNT_ID =
+  (process.argv.find((a) => a.startsWith('--account-id=')) || '').split('=')[1] || '';
+
 // 无 GPU 的环境（远程桌面 / 虚拟机 / 自动化沙箱）里 GPU 进程会反复崩溃，
 // 直接退到软件光栅；有 GPU 时保持默认的硬件加速。
 if (SELFCHECK || process.argv.includes('--disable-gpu') || process.env.MINIBROWSER_NO_GPU) {
@@ -1707,12 +1712,21 @@ app.whenReady().then(async () => {
     if (accountsWin && !accountsWin.isDestroyed()) accountsWin.webContents.send('accounts:changed');
   });
 
-  createWindow();
+  const startAccount =
+    START_ACCOUNT_ID && accounts.exists(START_ACCOUNT_ID)
+      ? accounts.get(START_ACCOUNT_ID)
+      : START_ACCOUNT_NAME
+        ? accounts.list().find((a) => a.name === START_ACCOUNT_NAME)
+        : null;
+  if ((START_ACCOUNT_ID || START_ACCOUNT_NAME) && !startAccount) {
+    console.warn(`[account] 未找到账号：${START_ACCOUNT_ID || START_ACCOUNT_NAME}`);
+  }
+  createWindow(startAccount ? { accountId: startAccount.id } : {});
   if (AUTOMATION_PORT) {
     automation.start({
       port: AUTOMATION_PORT,
       token: AUTOMATION_TOKEN,
-      api: { windows, curCtx, activeTab, createTab, setActive },
+      api: { windows, curCtx, activeTab, createTab, setActive, switchAccount },
     });
   }
   if (SELFCHECK) await selfCheck();

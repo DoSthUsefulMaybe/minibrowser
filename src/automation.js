@@ -22,6 +22,11 @@
  *   POST /listen          → 开启网络/控制台捕获
  *   POST /clear-events    → 清空捕获
  *   POST /netbody         → { requestId, tabId? }（响应体，敏感字段打码）
+ *   POST /upload          → { selector, filePath, tabId? }（仅临时目录文件）
+ *   POST /click-text      → { text, tabId? }（点击包含该文本的可点击祖先）
+ *   POST /click-point     → { x, y, tabId? }（按页面坐标点击）
+ *   POST /switch-account  → { accountId, tabId? }（切换标签所在账号会话）
+ *   POST /paste           → { text, tabId? }（写入剪贴板并粘贴到当前焦点）
  *   POST /wait            → { ms }
  *
  * 安全边界：只监听 127.0.0.1，必须带 Bearer token，拒绝非本机 Host，
@@ -422,6 +427,90 @@ function start({ port, token, api }) {
           base64Encoded: !!r.base64Encoded,
           body: redactBody(r.body),
         });
+      }
+
+      if (url.pathname === '/upload') {
+        const { tab } = pickTab(api, body.tabId);
+        const selector = String(body.selector || '');
+        const filePath = String(body.filePath || '');
+        if (!selector || !filePath) throw new Error('selector and filePath required');
+        const resolved = path.resolve(filePath);
+        const tmp = path.resolve(os.tmpdir());
+        if (resolved !== tmp && !resolved.startsWith(tmp + path.sep)) {
+          throw new Error('file must be under the system temp directory');
+        }
+        const dbg = tab.view.webContents.debugger;
+        if (!dbg.isAttached()) dbg.attach('1.3');
+        await dbg.sendCommand('DOM.enable');
+        const doc = await dbg.sendCommand('DOM.getDocument', { depth: 1 });
+        const q = await dbg.sendCommand('DOM.querySelector', { nodeId: doc.root.nodeId, selector });
+        if (!q.nodeId) throw new Error('file input not found');
+        await dbg.sendCommand('DOM.setFileInputFiles', { nodeId: q.nodeId, files: [resolved] });
+        return json(res, 200, { ok: true, file: resolved });
+      }
+
+      if (url.pathname === '/click-text') {
+        const { tab } = pickTab(api, body.tabId);
+        const text = String(body.text || '').trim();
+        if (!text) throw new Error('text required');
+        const dbg = tab.view.webContents.debugger;
+        if (!dbg.isAttached()) dbg.attach('1.3');
+        await dbg.sendCommand('DOM.enable');
+        const s = await dbg.sendCommand('DOM.performSearch', {
+          query: text,
+          includeUserAgentShadowDOM: true,
+        });
+        if (!s.resultCount) return json(res, 404, { ok: false, error: 'text not found' });
+        const r = await dbg.sendCommand('DOM.getSearchResults', {
+          searchId: s.searchId,
+          fromIndex: 0,
+          toIndex: s.resultCount,
+        });
+        for (const nodeId of r.nodeIds || []) {
+          const resolved = await dbg.sendCommand('DOM.resolveNode', { nodeId });
+          const obj = resolved.object.objectId;
+          const clicked = await dbg.sendCommand('Runtime.callFunctionOn', {
+            objectId: obj,
+            functionDeclaration:
+              'function(){ let el=this.nodeType===3?this.parentElement:this; for(let i=0;i<8&&el;i++){ const r=el.getBoundingClientRect(); if(r.width>0&&r.height>0&&(el.tagName==="BUTTON"||el.getAttribute("role")==="button"||/btn|button/i.test(String(el.className)))){ el.click(); return {clicked:true,tag:el.tagName,cls:String(el.className).slice(0,100)}; } el=el.parentElement; } return {clicked:false}; }',
+            returnByValue: true,
+          });
+          if (clicked.result && clicked.result.value && clicked.result.value.clicked) {
+            return json(res, 200, { ok: true, clicked: clicked.result.value });
+          }
+        }
+        return json(res, 404, { ok: false, error: 'clickable ancestor not found' });
+      }
+
+      if (url.pathname === '/switch-account') {
+        const { tab, ctx } = pickTab(api, body.tabId);
+        const accountId = String(body.accountId || '');
+        if (!accountId) throw new Error('accountId required');
+        const ok = api.switchAccount(tab.id, accountId, ctx);
+        return json(res, 200, { ok: !!ok, tab: tabInfo(tab, ctx) });
+      }
+
+      if (url.pathname === '/click-point') {
+        const { tab } = pickTab(api, body.tabId);
+        const x = Math.round(Number(body.x));
+        const y = Math.round(Number(body.y));
+        if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('x/y required');
+        const wc = tab.view.webContents;
+        wc.sendInputEvent({ type: 'mouseMove', x, y });
+        wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+        wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+        return json(res, 200, { ok: true, x, y });
+      }
+
+      if (url.pathname === '/paste') {
+        const { tab } = pickTab(api, body.tabId);
+        const text = String(body.text || '');
+        if (!text) throw new Error('text required');
+        const { clipboard } = require('electron');
+        clipboard.writeText(text);
+        tab.view.webContents.focus();
+        tab.view.webContents.paste();
+        return json(res, 200, { ok: true, length: text.length });
       }
 
       if (url.pathname === '/wait') {
